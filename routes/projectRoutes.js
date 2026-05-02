@@ -5,7 +5,15 @@ const mongoose = require('mongoose');
 const { protect } = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
 const { validate } = require('../middleware/validate');
-const { createProject, getProjects, getProjectById } = require('../controllers/projectController');
+const {
+  createProject,
+  getProjects,
+  getProjectById,
+  updateProject,
+  addProjectMembers,
+  removeProjectMember,
+  deleteProject
+} = require('../controllers/projectController');
 
 const router = express.Router();
 
@@ -143,6 +151,180 @@ router.get(
   [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id')],
   validate,
   getProjectById
+);
+
+/**
+ * @openapi
+ * /api/projects/{id}:
+ *   put:
+ *     tags:
+ *       - Projects
+ *     summary: Update a project (Admin only, owner only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/ProjectUpdateInput'
+ *     responses:
+ *       200:
+ *         description: OK
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Not found
+ */
+router.put(
+  '/:id',
+  protect,
+  requireRole('Admin'),
+  [
+    param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
+    body('name').optional().trim().notEmpty().withMessage('name cannot be empty'),
+    body('description').optional().isString()
+  ],
+  validate,
+  updateProject
+);
+
+/**
+ * @openapi
+ * /api/projects/{id}/members:
+ *   post:
+ *     tags:
+ *       - Projects
+ *     summary: Add team members to a project (Admin only, owner only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/ProjectMembersInput'
+ *     responses:
+ *       200:
+ *         description: OK
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Not found
+ */
+router.post(
+  '/:id/members',
+  protect,
+  requireRole('Admin'),
+  [
+    param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
+    body('teamMembers').isArray({ min: 1 }).withMessage('teamMembers must be a non-empty array'),
+    body('teamMembers.*')
+      .custom((v) => mongoose.Types.ObjectId.isValid(v))
+      .withMessage('teamMembers must contain valid user ids')
+  ],
+  validate,
+  addProjectMembers
+);
+
+/**
+ * @openapi
+ * /api/projects/{id}/members/{userId}:
+ *   delete:
+ *     tags:
+ *       - Projects
+ *     summary: Remove a team member from a project (Admin only, owner only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: OK
+ *       400:
+ *         description: Validation error
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Not found
+ */
+router.delete(
+  '/:id/members/:userId',
+  protect,
+  requireRole('Admin'),
+  [
+    param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
+    param('userId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid user id')
+  ],
+  validate,
+  removeProjectMember
+);
+
+/**
+ * @openapi
+ * /api/projects/{id}:
+ *   delete:
+ *     tags:
+ *       - Projects
+ *     summary: Delete a project (Admin only, owner only)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: OK
+ *       400:
+ *         description: Invalid id
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Not found
+ */
+router.delete(
+  '/:id',
+  protect,
+  requireRole('Admin'),
+  [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id')],
+  validate,
+  deleteProject
 );
 
 module.exports = router;

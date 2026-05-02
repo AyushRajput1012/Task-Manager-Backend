@@ -91,6 +91,23 @@ const swaggerSpec = swaggerJSDoc({
             },
           },
         },
+        ProjectUpdateInput: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', example: 'Website Redesign v2' },
+            description: { type: 'string', example: 'Updated description.' },
+          },
+        },
+        ProjectMembersInput: {
+          type: 'object',
+          required: ['teamMembers'],
+          properties: {
+            teamMembers: {
+              type: 'array',
+              items: { type: 'string', example: '6639b7f1a8f2d8a1c1234567' },
+            },
+          },
+        },
         TaskInput: {
           type: 'object',
           required: ['title', 'assignedTo', 'projectId', 'deadline'],
@@ -119,10 +136,46 @@ const swaggerSpec = swaggerJSDoc({
             message: { type: 'string' },
           },
         },
+        ValidationErrorResponse: {
+          type: 'object',
+          properties: {
+            errors: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  field: { type: 'string', example: 'email' },
+                  message: { type: 'string', example: 'valid email is required' },
+                },
+              },
+            },
+          },
+        },
         DeleteResponse: {
           type: 'object',
           properties: {
             message: { type: 'string', example: 'Task deleted' },
+          },
+        },
+        TaskDashboardResponse: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', enum: ['mine', 'all'], example: 'mine' },
+            total: { type: 'number', example: 12 },
+            byStatus: {
+              type: 'object',
+              properties: {
+                Pending: { type: 'number', example: 5 },
+                'In Progress': { type: 'number', example: 4 },
+                Completed: { type: 'number', example: 3 },
+              },
+              additionalProperties: false,
+            },
+            overdue: { type: 'number', example: 2 },
+            overdueTasks: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/Task' },
+            },
           },
         },
       },

@@ -21,6 +21,11 @@ const populateTask = (query) =>
       ]
     });
 
+const assertProjectAccess = async (projectId, userId) => {
+  const allowed = await Project.exists({ _id: projectId, teamMembers: userId });
+  return Boolean(allowed);
+};
+
 // POST /api/tasks (Admin only)
 const createTask = asyncHandler(async (req, res) => {
   const { title, description = '', status, assignedTo, projectId, deadline } = req.body;
@@ -29,6 +34,12 @@ const createTask = asyncHandler(async (req, res) => {
   if (!project) {
     res.status(400);
     throw new Error('Invalid projectId');
+  }
+
+  const creatorInProject = project.teamMembers.some((m) => String(m) === String(req.user._id));
+  if (!creatorInProject) {
+    res.status(403);
+    throw new Error('Forbidden');
   }
 
   const assignee = await User.findById(assignedTo).select('_id');
@@ -94,13 +105,17 @@ const updateTask = asyncHandler(async (req, res) => {
     throw new Error('Task not found');
   }
 
+  const isAdmin = req.user.role === 'Admin';
+  if (!isAdmin && String(task.assignedTo) !== String(req.user._id)) {
+    res.status(403);
+    throw new Error('Forbidden');
+  }
+
   const project = await Project.findOne({ _id: task.projectId, teamMembers: req.user._id }).select('_id teamMembers');
   if (!project) {
     res.status(403);
     throw new Error('Forbidden');
   }
-
-  const isAdmin = req.user.role === 'Admin';
 
   const { title, description, status, assignedTo, deadline } = req.body;
 
@@ -132,6 +147,91 @@ const updateTask = asyncHandler(async (req, res) => {
   res.json(populated);
 });
 
+// GET /api/tasks/:id
+const getTaskById = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    res.status(400);
+    throw new Error('Invalid task id');
+  }
+
+  const task = await Task.findById(id);
+  if (!task) {
+    res.status(404);
+    throw new Error('Task not found');
+  }
+
+  const allowed = await assertProjectAccess(task.projectId, req.user._id);
+  if (!allowed) {
+    res.status(403);
+    throw new Error('Forbidden');
+  }
+
+  const populated = await populateTask(Task.findById(task._id));
+  res.json(populated);
+});
+
+// GET /api/tasks/dashboard
+// Default scope: "mine" (tasks assigned to current user)
+// Admin can use ?scope=all to see team tasks across accessible projects
+const getTaskDashboard = asyncHandler(async (req, res) => {
+  const accessibleProjectIds = await getAccessibleProjectIds(req.user._id);
+
+  const { projectId, scope } = req.query;
+  let projectFilter = { $in: accessibleProjectIds };
+
+  if (projectId) {
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      res.status(400);
+      throw new Error('Invalid projectId');
+    }
+    const allowed = accessibleProjectIds.some((p) => String(p) === String(projectId));
+    if (!allowed) {
+      res.status(403);
+      throw new Error('Forbidden');
+    }
+    projectFilter = projectId;
+  }
+
+  const isAdmin = req.user.role === 'Admin';
+  const finalScope = isAdmin && scope === 'all' ? 'all' : 'mine';
+
+  const baseMatch = {
+    projectId: projectFilter,
+    ...(finalScope === 'mine' ? { assignedTo: req.user._id } : {})
+  };
+
+  const now = new Date();
+  const [total, byStatusRows, overdue, overdueTasks] = await Promise.all([
+    Task.countDocuments(baseMatch),
+    Task.aggregate([
+      { $match: baseMatch },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]),
+    Task.countDocuments({
+      ...baseMatch,
+      status: { $ne: 'Completed' },
+      deadline: { $lt: now }
+    }),
+    populateTask(
+      Task.find({
+        ...baseMatch,
+        status: { $ne: 'Completed' },
+        deadline: { $lt: now }
+      })
+        .sort({ deadline: 1 })
+        .limit(25)
+    )
+  ]);
+
+  const byStatus = { Pending: 0, 'In Progress': 0, Completed: 0 };
+  for (const row of byStatusRows) {
+    if (row && row._id && typeof row.count === 'number') byStatus[row._id] = row.count;
+  }
+
+  res.json({ scope: finalScope, total, byStatus, overdue, overdueTasks });
+});
+
 // DELETE /api/tasks/:id (Admin only)
 const deleteTask = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -156,4 +256,4 @@ const deleteTask = asyncHandler(async (req, res) => {
   res.json({ message: 'Task deleted' });
 });
 
-module.exports = { createTask, getTasks, updateTask, deleteTask };
+module.exports = { createTask, getTasks, getTaskById, getTaskDashboard, updateTask, deleteTask };

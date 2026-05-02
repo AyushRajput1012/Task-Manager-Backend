@@ -5,7 +5,14 @@ const mongoose = require('mongoose');
 const { protect } = require('../middleware/authMiddleware');
 const { requireRole } = require('../middleware/roleMiddleware');
 const { validate } = require('../middleware/validate');
-const { createTask, getTasks, updateTask, deleteTask } = require('../controllers/taskController');
+const {
+  createTask,
+  getTasks,
+  getTaskById,
+  getTaskDashboard,
+  updateTask,
+  deleteTask
+} = require('../controllers/taskController');
 
 const router = express.Router();
 
@@ -110,6 +117,75 @@ router.post(
 );
 
 router.get('/', protect, getTasks);
+
+/**
+ * @openapi
+ * /api/tasks/dashboard:
+ *   get:
+ *     tags:
+ *       - Tasks
+ *     summary: Dashboard summary (counts + overdue)
+ *     description: Defaults to tasks assigned to the current user. Admin can pass scope=all to include all tasks in accessible projects.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: projectId
+ *         schema:
+ *           type: string
+ *         description: Filter dashboard by project id
+ *       - in: query
+ *         name: scope
+ *         schema:
+ *           type: string
+ *           enum: [mine, all]
+ *         description: Admin only. Use all to include team tasks.
+ *     responses:
+ *       200:
+ *         description: OK
+ *       400:
+ *         description: Invalid projectId
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ */
+router.get('/dashboard', protect, getTaskDashboard);
+
+/**
+ * @openapi
+ * /api/tasks/{id}:
+ *   get:
+ *     tags:
+ *       - Tasks
+ *     summary: Get a task by id
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: OK
+ *       400:
+ *         description: Invalid id
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden
+ *       404:
+ *         description: Not found
+ */
+router.get(
+  '/:id',
+  protect,
+  [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')],
+  validate,
+  getTaskById
+);
 
 /**
  * @openapi
