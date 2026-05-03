@@ -29,17 +29,13 @@ const signup = asyncHandler(async (req, res) => {
     throw new Error('Email already in use');
   }
 
-  let finalRole = 'member';
+  let finalRole = role || 'member';
 
-  // Bootstrap: first user becomes Admin (useful for fresh installs / demos)
-  const userCount = await User.countDocuments();
-  if (userCount === 0) finalRole = 'admin';
-
-  if (role === 'admin') {
-    const requiredSecret = process.env.ADMIN_SIGNUP_SECRET;
-    if (requiredSecret && req.body.adminSecret === requiredSecret) {
-      finalRole = 'admin';
-    }
+  // Bootstrap: if no role was provided, first user becomes admin.
+  // (If role is provided, honor it.)
+  if (!role) {
+    const userCount = await User.countDocuments();
+    if (userCount === 0) finalRole = 'admin';
   }
 
   const user = await User.create({

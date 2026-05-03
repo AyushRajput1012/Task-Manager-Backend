@@ -34,14 +34,12 @@ const router = express.Router();
  *                 minLength: 6
  *               role:
  *                 type: string
- *                 enum: [Admin, Member]
- *               adminSecret:
- *                 type: string
+ *                 enum: [admin, member]
  *           example:
  *             name: Jane Doe
  *             email: jane@example.com
  *             password: strongpass
- *             role: Member
+ *             role: member
  *     responses:
  *       201:
  *         description: Created
@@ -62,7 +60,7 @@ router.post(
     body('name').trim().notEmpty().withMessage('name is required'),
     body('email').isEmail().withMessage('valid email is required'),
     body('password').isLength({ min: 6 }).withMessage('password must be at least 6 characters'),
-    body('role').optional().isIn(['admin', 'member']).withMessage('role must be admin or member')
+    body('role').optional().toLowerCase().isIn(['admin', 'member']).withMessage('role must be admin or member')
   ],
   validate,
   signup

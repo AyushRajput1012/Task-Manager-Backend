@@ -33,7 +33,7 @@ const swaggerSpec = swaggerJSDoc({
             id: { type: 'string', example: '6639b7f1a8f2d8a1c1234567' },
             name: { type: 'string', example: 'Jane Doe' },
             email: { type: 'string', example: 'jane@example.com' },
-            role: { type: 'string', enum: ['Admin', 'Member'], example: 'Member' },
+            role: { type: 'string', enum: ['admin', 'member'], example: 'member' },
           },
         },
         UserListItem: {
@@ -42,7 +42,7 @@ const swaggerSpec = swaggerJSDoc({
             _id: { type: 'string', example: '6639b7f1a8f2d8a1c1234567' },
             name: { type: 'string', example: 'Jane Doe' },
             email: { type: 'string', example: 'jane@example.com' },
-            role: { type: 'string', enum: ['Admin', 'Member'], example: 'Member' },
+            role: { type: 'string', enum: ['admin', 'member'], example: 'member' },
             createdAt: { type: 'string', format: 'date-time' },
             updatedAt: { type: 'string', format: 'date-time' },
           },
