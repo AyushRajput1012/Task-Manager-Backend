@@ -4,15 +4,19 @@ const mongoose = require('mongoose');
 
 const { protect } = require('../middleware/authMiddleware');
 const { validate } = require('../middleware/validate');
+const { normalizeTaskStatus, ALLOWED_TASK_STATUS_INPUTS } = require('../utils/taskStatus');
 const {
   createProject,
   getProjects,
   getProjectById,
   updateProject,
+  updateProjectMembers,
   addProjectMembers,
   removeProjectMember,
   deleteProject
 } = require('../controllers/projectController');
+
+const { updateTask, deleteTask } = require('../controllers/taskController');
 
 const router = express.Router();
 
@@ -192,6 +196,92 @@ router.put(
   ],
   validate,
   updateProject
+);
+
+// PATCH /api/projects/:projectId
+// Bulk project member management: { teamMembers } OR { addMembers, removeMembers }
+router.patch(
+  '/:projectId',
+  protect,
+  [
+    param('projectId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
+    body('teamMembers').optional().isArray().withMessage('teamMembers must be an array'),
+    body('addMembers').optional().isArray().withMessage('addMembers must be an array'),
+    body('removeMembers').optional().isArray().withMessage('removeMembers must be an array'),
+    body().custom((bodyValue) => {
+      const hasTeamMembers = Object.prototype.hasOwnProperty.call(bodyValue, 'teamMembers');
+      const hasDelta =
+        Object.prototype.hasOwnProperty.call(bodyValue, 'addMembers') ||
+        Object.prototype.hasOwnProperty.call(bodyValue, 'removeMembers');
+      if (!hasTeamMembers && !hasDelta) {
+        throw new Error('Provide teamMembers or addMembers/removeMembers');
+      }
+      return true;
+    }),
+    body('teamMembers.*')
+      .optional()
+      .custom((v) => mongoose.Types.ObjectId.isValid(v))
+      .withMessage('teamMembers must contain valid user ids'),
+    body('addMembers.*')
+      .optional()
+      .custom((v) => mongoose.Types.ObjectId.isValid(v))
+      .withMessage('addMembers must contain valid user ids'),
+    body('removeMembers.*')
+      .optional()
+      .custom((v) => mongoose.Types.ObjectId.isValid(v))
+      .withMessage('removeMembers must contain valid user ids')
+  ],
+  validate,
+  updateProjectMembers
+);
+
+// --- Project-scoped task routes (compat / optional) ---
+// These exist to support clients that call /api/projects/:projectId/tasks/:taskId.
+// Canonical routes remain /api/tasks/:taskId.
+const updateTaskInProjectValidators = [
+  param('projectId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
+  param('taskId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
+  body('title').optional().trim().notEmpty().withMessage('title cannot be empty'),
+  body('description').optional().isString(),
+  body('status')
+    .optional()
+    .custom((v) => normalizeTaskStatus(v) !== null)
+    .withMessage(`invalid status. Allowed values: ${ALLOWED_TASK_STATUS_INPUTS.join(', ')}`),
+  body('assignedTo')
+    .optional({ nullable: true })
+    .custom((v) => v === null || mongoose.Types.ObjectId.isValid(v))
+    .withMessage('invalid assignedTo'),
+  body('projectId')
+    .optional()
+    .custom((v) => mongoose.Types.ObjectId.isValid(v))
+    .withMessage('invalid projectId'),
+  body('priority')
+    .optional()
+    .isIn(['low', 'medium', 'high', 'urgent'])
+    .withMessage('invalid priority'),
+  body('dueDate')
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('dueDate must be an ISO8601 date'),
+  body('deadline')
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('deadline must be an ISO8601 date'),
+  body('tags').optional().isArray().withMessage('tags must be an array'),
+  body('tags.*').optional().isString().withMessage('tags must be strings')
+];
+
+router.patch('/:projectId/tasks/:taskId', protect, updateTaskInProjectValidators, validate, updateTask);
+router.put('/:projectId/tasks/:taskId', protect, updateTaskInProjectValidators, validate, updateTask);
+router.delete(
+  '/:projectId/tasks/:taskId',
+  protect,
+  [
+    param('projectId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
+    param('taskId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')
+  ],
+  validate,
+  deleteTask
 );
 
 /**

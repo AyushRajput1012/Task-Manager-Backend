@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 
 const { protect } = require('../middleware/authMiddleware');
 const { validate } = require('../middleware/validate');
+const { normalizeTaskStatus, ALLOWED_TASK_STATUS_INPUTS } = require('../utils/taskStatus');
 const {
   createTask,
   getTasks,
@@ -150,9 +151,9 @@ router.get('/', protect, getTasks);
  *         description: Not found
  */
 router.get(
-  '/:id',
+  '/:taskId',
   protect,
-  [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')],
+  [param('taskId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')],
   validate,
   getTaskById
 );
@@ -254,50 +255,73 @@ router.get(
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
+const updateTaskValidators = [
+  param('taskId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
+  body('title').optional().trim().notEmpty().withMessage('title cannot be empty'),
+  body('description').optional().isString(),
+  body('status')
+    .optional()
+    .custom((v) => normalizeTaskStatus(v) !== null)
+    .withMessage(`invalid status. Allowed values: ${ALLOWED_TASK_STATUS_INPUTS.join(', ')}`),
+  body('assignedTo')
+    .optional({ nullable: true })
+    .custom((v) => v === null || mongoose.Types.ObjectId.isValid(v))
+    .withMessage('invalid assignedTo'),
+  body('projectId')
+    .optional()
+    .custom((v) => mongoose.Types.ObjectId.isValid(v))
+    .withMessage('invalid projectId'),
+  body('priority')
+    .optional()
+    .isIn(['low', 'medium', 'high', 'urgent'])
+    .withMessage('invalid priority'),
+  // Support both names: dueDate (existing) and deadline (frontend wording)
+  body('dueDate')
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('dueDate must be an ISO8601 date'),
+  body('deadline')
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('deadline must be an ISO8601 date'),
+  body('tags').optional().isArray().withMessage('tags must be an array'),
+  body('tags.*').optional().isString().withMessage('tags must be strings')
+];
+
 router.put(
-  '/:id',
+  '/:taskId',
   protect,
-  [
-    param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
-    body('title').optional().isString(),
-    body('description').optional().isString(),
-    body('status')
-      .optional()
-      .isIn(['todo', 'in-progress', 'review', 'completed'])
-      .withMessage('invalid status'),
-    body('assignedTo')
-      .optional({ nullable: true })
-      .custom((v) => v === null || mongoose.Types.ObjectId.isValid(v))
-      .withMessage('invalid assignedTo'),
-    body('priority')
-      .optional()
-      .isIn(['low', 'medium', 'high', 'urgent'])
-      .withMessage('invalid priority'),
-    body('dueDate').optional().isISO8601().withMessage('dueDate must be an ISO8601 date'),
-    body('tags').optional().isArray().withMessage('tags must be an array'),
-    body('tags.*').optional().isString().withMessage('tags must be strings')
-  ],
+  updateTaskValidators,
+  validate,
+  updateTask
+);
+
+// Preferred: partial update
+router.patch(
+  '/:taskId',
+  protect,
+  updateTaskValidators,
   validate,
   updateTask
 );
 
 router.patch(
-  '/:id/status',
+  '/:taskId/status',
   protect,
   [
-    param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
+    param('taskId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
     body('status')
-      .isIn(['todo', 'in-progress', 'review', 'completed'])
-      .withMessage('invalid status')
+      .custom((v) => normalizeTaskStatus(v) !== null)
+      .withMessage(`invalid status. Allowed values: ${ALLOWED_TASK_STATUS_INPUTS.join(', ')}`)
   ],
   validate,
   updateTaskStatus
 );
 
 router.delete(
-  '/:id',
+  '/:taskId',
   protect,
-  [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')],
+  [param('taskId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')],
   validate,
   deleteTask
 );

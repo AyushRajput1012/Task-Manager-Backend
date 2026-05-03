@@ -3,6 +3,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const Task = require('../models/Task');
 const Project = require('../models/Project');
 const User = require('../models/User');
+const { normalizeTaskStatus, ALLOWED_TASK_STATUS_INPUTS } = require('../utils/taskStatus');
 
 const populateTask = (query) =>
   query
@@ -161,7 +162,7 @@ const getTasks = asyncHandler(async (req, res) => {
 
 // GET /api/tasks/:id
 const getTaskById = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.taskId || req.params.id;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     res.status(400);
     throw new Error('Invalid task id');
@@ -190,7 +191,7 @@ const getTaskById = asyncHandler(async (req, res) => {
 
 // PUT /api/tasks/:id
 const updateTask = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.taskId || req.params.id;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     res.status(400);
     throw new Error('Invalid task id');
@@ -200,6 +201,19 @@ const updateTask = asyncHandler(async (req, res) => {
   if (!task) {
     res.status(404);
     throw new Error('Task not found');
+  }
+
+  // Support project-scoped routes like /api/projects/:projectId/tasks/:taskId
+  if (req.params.projectId) {
+    const projectIdParam = req.params.projectId;
+    if (!mongoose.Types.ObjectId.isValid(projectIdParam)) {
+      res.status(400);
+      throw new Error('Invalid projectId');
+    }
+    if (String(task.project) !== String(projectIdParam)) {
+      res.status(400);
+      throw new Error('Task does not belong to the specified project');
+    }
   }
 
   const { project, isMember, isAdmin: isProjectAdmin } = await getProjectAccess(task.project, req.user._id);
@@ -213,17 +227,25 @@ const updateTask = asyncHandler(async (req, res) => {
     throw new Error('Access denied');
   }
 
-  const { title, description, status, assignedTo, priority, dueDate, tags } = req.body;
+  const { title, description, status, assignedTo, priority, projectId, tags } = req.body;
+  const dueDate =
+    typeof req.body.dueDate !== 'undefined' ? req.body.dueDate : typeof req.body.deadline !== 'undefined' ? req.body.deadline : undefined;
+
+  const normalizedStatus = typeof status === 'undefined' ? undefined : normalizeTaskStatus(status);
+  if (typeof status !== 'undefined' && normalizedStatus === null) {
+    res.status(400);
+    throw new Error(`Invalid status. Allowed values: ${ALLOWED_TASK_STATUS_INPUTS.join(', ')}`);
+  }
 
   if (typeof title !== 'undefined') task.title = title;
   if (typeof description !== 'undefined') task.description = description;
-  if (typeof status !== 'undefined') task.status = status;
+  if (typeof status !== 'undefined') task.status = normalizedStatus;
   if (typeof priority !== 'undefined') task.priority = priority;
   if (typeof dueDate !== 'undefined') task.dueDate = dueDate ? new Date(dueDate) : null;
   if (typeof tags !== 'undefined') task.tags = tags;
 
   if (typeof status !== 'undefined') {
-    task.completedAt = status === 'completed' ? new Date() : null;
+    task.completedAt = normalizedStatus === 'completed' ? new Date() : null;
   }
 
   if (typeof assignedTo !== 'undefined') {
@@ -248,8 +270,44 @@ const updateTask = asyncHandler(async (req, res) => {
     }
   }
 
-  if (typeof status !== 'undefined' && status === 'completed') {
+  if (typeof status !== 'undefined' && normalizedStatus === 'completed') {
     task.completedAt = new Date();
+  }
+
+  // Allow moving a task to another project (admin-only in project context)
+  if (typeof projectId !== 'undefined') {
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      res.status(400);
+      throw new Error('Invalid projectId');
+    }
+
+    // Only project admins (or global admins) can change project association.
+    if (!isProjectAdmin && req.user.role !== 'admin') {
+      res.status(403);
+      throw new Error('Access denied');
+    }
+
+    const { project: nextProject, isMember: isMemberInNextProject } = await getProjectAccess(projectId, req.user._id);
+    if (!nextProject) {
+      res.status(400);
+      throw new Error('Invalid projectId');
+    }
+    if (!isMemberInNextProject && req.user.role !== 'admin') {
+      res.status(403);
+      throw new Error('Not a project member');
+    }
+
+    // If there is an assignee set (existing or new), it must be part of the new project.
+    const effectiveAssigneeId = typeof assignedTo !== 'undefined' ? assignedTo : task.assignedTo;
+    if (effectiveAssigneeId) {
+      const inTeam = nextProject.members.some((m) => String(m.user) === String(effectiveAssigneeId));
+      if (!inTeam && String(nextProject.owner) !== String(effectiveAssigneeId)) {
+        res.status(400);
+        throw new Error('assignedTo must be a member of the project team');
+      }
+    }
+
+    task.project = projectId;
   }
 
   if (!isProjectAdmin && req.user.role !== 'admin') {
@@ -266,8 +324,14 @@ const updateTask = asyncHandler(async (req, res) => {
 
 // PATCH /api/tasks/:id/status
 const updateTaskStatus = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.taskId || req.params.id;
   const { status } = req.body;
+
+  const normalizedStatus = normalizeTaskStatus(status);
+  if (normalizedStatus === null) {
+    res.status(400);
+    throw new Error(`Invalid status. Allowed values: ${ALLOWED_TASK_STATUS_INPUTS.join(', ')}`);
+  }
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
     res.status(400);
@@ -291,8 +355,8 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
     }
   }
 
-  task.status = status;
-  task.completedAt = status === 'completed' ? new Date() : null;
+  task.status = normalizedStatus;
+  task.completedAt = normalizedStatus === 'completed' ? new Date() : null;
   await task.save();
 
   const populated = await populateTask(Task.findById(task._id));
@@ -301,7 +365,7 @@ const updateTaskStatus = asyncHandler(async (req, res) => {
 
 // DELETE /api/tasks/:id
 const deleteTask = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.taskId || req.params.id;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     res.status(400);
     throw new Error('Invalid task id');
@@ -311,6 +375,19 @@ const deleteTask = asyncHandler(async (req, res) => {
   if (!task) {
     res.status(404);
     throw new Error('Task not found');
+  }
+
+  // Support project-scoped routes like /api/projects/:projectId/tasks/:taskId
+  if (req.params.projectId) {
+    const projectIdParam = req.params.projectId;
+    if (!mongoose.Types.ObjectId.isValid(projectIdParam)) {
+      res.status(400);
+      throw new Error('Invalid projectId');
+    }
+    if (String(task.project) !== String(projectIdParam)) {
+      res.status(400);
+      throw new Error('Task does not belong to the specified project');
+    }
   }
 
   const project = await Project.findById(task.project).select('owner members');

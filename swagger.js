@@ -83,6 +83,25 @@
               createdAt: { type: 'string', format: 'date-time' },
             },
           },
+          TaskUpdate: {
+            type: 'object',
+            description:
+              'Partial update payload. All fields are optional; provide any subset. For status, the API accepts UI labels (Pending, In Progress, Completed) and also internal values (todo, in-progress, review, completed). You may send either dueDate or deadline (alias).',
+            properties: {
+              title: { type: 'string' },
+              description: { type: 'string' },
+              status: {
+                type: 'string',
+                enum: ['Pending', 'In Progress', 'Completed', 'todo', 'in-progress', 'review', 'completed'],
+              },
+              assignedTo: { type: 'string', nullable: true, description: 'User id or null to unassign' },
+              projectId: { type: 'string', description: 'Move task to another project (admin-only in project context)' },
+              priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+              dueDate: { type: 'string', format: 'date-time', nullable: true },
+              deadline: { type: 'string', format: 'date-time', nullable: true, description: 'Alias for dueDate' },
+              tags: { type: 'array', items: { type: 'string' } },
+            },
+          },
           // ── Common responses ──────────────────────────────────────────────────
           Error: {
             type: 'object',
@@ -487,6 +506,66 @@
             },
           },
         },
+
+        '/projects/{projectId}': {
+          patch: {
+            tags: ['Projects'],
+            summary: 'Bulk update project team members (owner/admin only)',
+            description:
+              'Supports either replacing the member set via teamMembers, or applying a delta via addMembers/removeMembers. Owner is always retained. Returns updated project plus teamMembers (array of user ids).',
+            parameters: [{ in: 'path', name: 'projectId', required: true, schema: { type: 'string' } }],
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    oneOf: [
+                      {
+                        type: 'object',
+                        required: ['teamMembers'],
+                        properties: {
+                          teamMembers: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Final list of member userIds (excluding owner).',
+                          },
+                        },
+                      },
+                      {
+                        type: 'object',
+                        properties: {
+                          addMembers: { type: 'array', items: { type: 'string' } },
+                          removeMembers: { type: 'array', items: { type: 'string' } },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+            responses: {
+              200: {
+                description: 'Updated project',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      properties: {
+                        success: { type: 'boolean' },
+                        project: { $ref: '#/components/schemas/Project' },
+                        teamMembers: { type: 'array', items: { type: 'string' } },
+                      },
+                    },
+                  },
+                },
+              },
+              400: { description: 'Validation error' },
+              401: { description: 'Unauthorized' },
+              403: { description: 'Access denied' },
+              404: { description: 'Project not found' },
+            },
+          },
+        },
   
         // ════════════════════════════════════════════════════════════
         //  TASKS
@@ -565,28 +644,37 @@
           },
           put: {
             tags: ['Tasks'],
-            summary: 'Update task (full update)',
+            summary: 'Update task (partial update supported)',
             parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
             requestBody: {
               content: {
                 'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      title: { type: 'string' },
-                      description: { type: 'string' },
-                      assignedTo: { type: 'string', nullable: true },
-                      status: { type: 'string', enum: ['todo', 'in-progress', 'review', 'completed'] },
-                      priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-                      dueDate: { type: 'string', format: 'date', nullable: true },
-                      tags: { type: 'array', items: { type: 'string' } },
-                    },
-                  },
+                  schema: { $ref: '#/components/schemas/TaskUpdate' },
                 },
               },
             },
             responses: {
               200: { description: 'Task updated' },
+              403: { description: 'Access denied' },
+              404: { description: 'Task not found' },
+            },
+          },
+          patch: {
+            tags: ['Tasks'],
+            summary: 'Update task (preferred partial update)',
+            parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/TaskUpdate' },
+                },
+              },
+            },
+            responses: {
+              200: { description: 'Task updated' },
+              400: { description: 'Validation error' },
+              401: { description: 'Unauthorized' },
               403: { description: 'Access denied' },
               404: { description: 'Task not found' },
             },
@@ -614,7 +702,10 @@
                     type: 'object',
                     required: ['status'],
                     properties: {
-                      status: { type: 'string', enum: ['todo', 'in-progress', 'review', 'completed'] },
+                      status: {
+                        type: 'string',
+                        enum: ['Pending', 'In Progress', 'Completed', 'todo', 'in-progress', 'review', 'completed'],
+                      },
                     },
                   },
                 },
@@ -624,6 +715,64 @@
               200: { description: 'Status updated', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, task: { $ref: '#/components/schemas/Task' } } } } } },
               400: { description: 'Invalid status' },
               403: { description: 'Access denied' },
+            },
+          },
+        },
+
+        // Compatibility: some clients call tasks under projects
+        '/projects/{projectId}/tasks/{taskId}': {
+          patch: {
+            tags: ['Tasks'],
+            summary: 'Update task within a project (compat route)',
+            description: 'Compatibility route. Prefer PATCH /tasks/{id} for clients.',
+            parameters: [
+              { in: 'path', name: 'projectId', required: true, schema: { type: 'string' } },
+              { in: 'path', name: 'taskId', required: true, schema: { type: 'string' } },
+            ],
+            requestBody: {
+              required: true,
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/TaskUpdate' } } },
+            },
+            responses: {
+              200: { description: 'Task updated' },
+              400: { description: 'Validation error or task not in project' },
+              401: { description: 'Unauthorized' },
+              403: { description: 'Access denied' },
+              404: { description: 'Task not found' },
+            },
+          },
+          put: {
+            tags: ['Tasks'],
+            summary: 'Update task within a project (compat route)',
+            description: 'Compatibility route. Prefer PUT/PATCH /tasks/{id} for clients.',
+            parameters: [
+              { in: 'path', name: 'projectId', required: true, schema: { type: 'string' } },
+              { in: 'path', name: 'taskId', required: true, schema: { type: 'string' } },
+            ],
+            requestBody: {
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/TaskUpdate' } } },
+            },
+            responses: {
+              200: { description: 'Task updated' },
+              400: { description: 'Validation error or task not in project' },
+              401: { description: 'Unauthorized' },
+              403: { description: 'Access denied' },
+              404: { description: 'Task not found' },
+            },
+          },
+          delete: {
+            tags: ['Tasks'],
+            summary: 'Delete task within a project (compat route)',
+            description: 'Compatibility route. Prefer DELETE /tasks/{id} for clients.',
+            parameters: [
+              { in: 'path', name: 'projectId', required: true, schema: { type: 'string' } },
+              { in: 'path', name: 'taskId', required: true, schema: { type: 'string' } },
+            ],
+            responses: {
+              200: { description: 'Task deleted' },
+              401: { description: 'Unauthorized' },
+              403: { description: 'Access denied' },
+              404: { description: 'Task not found' },
             },
           },
         },

@@ -19,6 +19,22 @@ const isProjectAdmin = (project, userId) => {
   return project.members.some((m) => String(m.user) === String(userId) && m.role === 'admin');
 };
 
+const toObjectIdStrings = (values) => {
+  if (!Array.isArray(values)) return [];
+  const cleaned = values
+    .filter((v) => typeof v === 'string' || mongoose.Types.ObjectId.isValid(v))
+    .map((v) => String(v).trim())
+    .filter((v) => v.length > 0);
+  return [...new Set(cleaned)];
+};
+
+const findMissingUserIds = async (userIds) => {
+  if (!userIds.length) return [];
+  const existing = await User.find({ _id: { $in: userIds } }).select('_id');
+  const existingSet = new Set(existing.map((u) => String(u._id)));
+  return userIds.filter((id) => !existingSet.has(String(id)));
+};
+
 // POST /api/projects
 const createProject = asyncHandler(async (req, res) => {
   const { name, description = '', deadline = null } = req.body;
@@ -140,6 +156,114 @@ const updateProject = asyncHandler(async (req, res) => {
   await project.save();
   const populated = await populateProject(Project.findById(project._id));
   res.json({ success: true, project: populated });
+});
+
+// PATCH /api/projects/:projectId
+// Supports:
+//  - { teamMembers: string[] } (replace membership set, excluding owner)
+//  - { addMembers: string[], removeMembers: string[] } (delta)
+// Only global admin or project owner can update members.
+const updateProjectMembers = asyncHandler(async (req, res) => {
+  const { projectId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(projectId)) {
+    res.status(400);
+    throw new Error('Invalid project id');
+  }
+
+  const project = await Project.findById(projectId);
+  if (!project) {
+    res.status(404);
+    throw new Error('Project not found');
+  }
+
+  const isOwner = String(project.owner) === String(req.user._id);
+  const isGlobalAdmin = req.user.role === 'admin';
+  if (!isOwner && !isGlobalAdmin) {
+    res.status(403);
+    throw new Error('Access denied');
+  }
+
+  const hasTeamMembers = Object.prototype.hasOwnProperty.call(req.body, 'teamMembers');
+  const hasDelta =
+    Object.prototype.hasOwnProperty.call(req.body, 'addMembers') ||
+    Object.prototype.hasOwnProperty.call(req.body, 'removeMembers');
+
+  if (!hasTeamMembers && !hasDelta) {
+    res.status(400);
+    throw new Error('Provide teamMembers or addMembers/removeMembers');
+  }
+
+  const ownerId = String(project.owner);
+  const currentMemberIds = project.members.map((m) => String(m.user));
+  const currentSet = new Set(currentMemberIds);
+
+  let addIds = [];
+  let removeIds = [];
+
+  if (hasTeamMembers) {
+    const desired = toObjectIdStrings(req.body.teamMembers);
+    // Owner is always considered a member; do not require it in payload.
+    const desiredSet = new Set(desired.filter((id) => id !== ownerId));
+
+    addIds = [...desiredSet].filter((id) => !currentSet.has(id));
+    removeIds = [...currentSet].filter((id) => id !== ownerId && !desiredSet.has(id));
+  } else {
+    addIds = toObjectIdStrings(req.body.addMembers);
+    removeIds = toObjectIdStrings(req.body.removeMembers);
+    addIds = addIds.filter((id) => id !== ownerId);
+    removeIds = removeIds.filter((id) => id !== ownerId);
+  }
+
+  // Validate users exist (for adds)
+  const missingAddIds = await findMissingUserIds(addIds);
+  if (missingAddIds.length > 0) {
+    res.status(400);
+    throw new Error(`Some userIds do not exist: ${missingAddIds.join(', ')}`);
+  }
+
+  // Ensure removal ids are currently members
+  const removeSet = new Set(removeIds);
+  const notMembers = removeIds.filter((id) => !currentSet.has(id));
+  if (notMembers.length > 0) {
+    res.status(400);
+    throw new Error(`Some removeMembers are not in the project: ${notMembers.join(', ')}`);
+  }
+
+  // Prevent removing members with assigned tasks
+  if (removeIds.length > 0) {
+    const remainingAssignedTasks = await Task.countDocuments({
+      project: project._id,
+      assignedTo: { $in: removeIds }
+    });
+    if (remainingAssignedTasks > 0) {
+      res.status(400);
+      throw new Error('Cannot remove member(s) with assigned tasks. Reassign or delete their tasks first');
+    }
+  }
+
+  // Apply removals
+  if (removeIds.length > 0) {
+    project.members = project.members.filter((m) => !removeSet.has(String(m.user)));
+  }
+
+  // Apply additions (default role: member)
+  for (const userId of addIds) {
+    const already = project.members.some((m) => String(m.user) === String(userId));
+    if (!already) {
+      project.members.push({ user: userId, role: 'member', joinedAt: new Date() });
+    }
+  }
+
+  // Ensure owner remains present in members array
+  const ownerEntryExists = project.members.some((m) => String(m.user) === ownerId);
+  if (!ownerEntryExists) {
+    project.members.push({ user: ownerId, role: 'admin', joinedAt: new Date() });
+  }
+
+  await project.save();
+  const populated = await populateProject(Project.findById(project._id));
+  const teamMembers = populated.members.map((m) => String(m.user?._id || m.user));
+  res.json({ success: true, project: populated, teamMembers });
 });
 
 // POST /api/projects/:id/members
@@ -268,6 +392,7 @@ module.exports = {
   getProjects,
   getProjectById,
   updateProject,
+  updateProjectMembers,
   addProjectMembers,
   removeProjectMember,
   deleteProject
