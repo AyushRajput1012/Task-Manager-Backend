@@ -10,6 +10,10 @@ const swaggerSpec = swaggerJSDoc({
     },
     servers: [
       {
+        url: 'https://task-manager-backend-production-295a.up.railway.app',
+        description: 'Production (Railway)',
+      },
+      {
         url: 'http://localhost:5000',
         description: 'Local dev server',
       },

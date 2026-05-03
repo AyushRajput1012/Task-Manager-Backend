@@ -4,58 +4,72 @@ const Project = require('../models/Project');
 const User = require('../models/User');
 const Task = require('../models/Task');
 
-const ensureOwner = (project, userId, res) => {
-  if (String(project.createdBy) !== String(userId)) {
-    res.status(403);
-    throw new Error('Forbidden');
-  }
+const populateProject = (query) =>
+  query
+    .populate('owner', 'name email role avatar isActive')
+    .populate('members.user', 'name email role avatar isActive');
+
+const isProjectMember = (project, userId) => {
+  if (String(project.owner) === String(userId)) return true;
+  return project.members.some((m) => String(m.user) === String(userId));
 };
 
-const populateProject = (query) =>
-  query.populate('createdBy', 'name email role').populate('teamMembers', 'name email role');
+const isProjectAdmin = (project, userId) => {
+  if (String(project.owner) === String(userId)) return true;
+  return project.members.some((m) => String(m.user) === String(userId) && m.role === 'admin');
+};
 
-// POST /api/projects (Admin only)
+// POST /api/projects
 const createProject = asyncHandler(async (req, res) => {
-  const { name, description = '', teamMembers = [] } = req.body;
-
-  const memberIds = Array.isArray(teamMembers) ? teamMembers : [];
-  const normalized = [...new Set(memberIds.map(String))];
-
-  for (const id of normalized) {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      res.status(400);
-      throw new Error('Invalid teamMembers id');
-    }
-  }
-
-  const creatorId = String(req.user._id);
-  if (!normalized.includes(creatorId)) normalized.push(creatorId);
-
-  const users = await User.find({ _id: { $in: normalized } }).select('_id');
-  if (users.length !== normalized.length) {
-    res.status(400);
-    throw new Error('One or more teamMembers do not exist');
-  }
+  const { name, description = '', deadline = null } = req.body;
 
   const project = await Project.create({
     name,
     description,
-    createdBy: req.user._id,
-    teamMembers: normalized
+    owner: req.user._id,
+    deadline: deadline ? new Date(deadline) : null,
+    members: [{ user: req.user._id, role: 'admin', joinedAt: new Date() }]
   });
 
   const populated = await populateProject(Project.findById(project._id));
-
-  res.status(201).json(populated);
+  res.status(201).json({ success: true, project: populated });
 });
 
 // GET /api/projects
 const getProjects = asyncHandler(async (req, res) => {
-  const projects = await Project.find({ teamMembers: req.user._id })
-    .sort({ createdAt: -1 })
-    .populate('createdBy', 'name email role')
-    .populate('teamMembers', 'name email role');
-  res.json(projects);
+  const { status, search } = req.query;
+  const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '20', 10), 1), 100);
+
+  const isAdmin = req.user.role === 'admin';
+  const filters = [];
+
+  if (!isAdmin) {
+    filters.push({
+      $or: [{ owner: req.user._id }, { 'members.user': req.user._id }]
+    });
+  }
+
+  if (status) filters.push({ status });
+
+  if (search) {
+    const q = new RegExp(search, 'i');
+    filters.push({ $or: [{ name: q }, { description: q }] });
+  }
+
+  const filter = filters.length ? { $and: filters } : {};
+
+  const [total, projects] = await Promise.all([
+    Project.countDocuments(filter),
+    populateProject(
+      Project.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+    )
+  ]);
+
+  res.json({ success: true, total, projects });
 });
 
 // GET /api/projects/:id
@@ -67,22 +81,37 @@ const getProjectById = asyncHandler(async (req, res) => {
   }
 
   const project = await populateProject(Project.findById(id));
-
   if (!project) {
     res.status(404);
     throw new Error('Project not found');
   }
 
-  const isMember = project.teamMembers.some((m) => String(m._id || m) === String(req.user._id));
-  if (!isMember) {
+  if (!isProjectMember(project, req.user._id) && req.user.role !== 'admin') {
     res.status(403);
-    throw new Error('Forbidden');
+    throw new Error('Access denied');
   }
 
-  res.json(project);
+  const [totalTasks, byStatusRows] = await Promise.all([
+    Task.countDocuments({ project: project._id }),
+    Task.aggregate([
+      { $match: { project: project._id } },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ])
+  ]);
+
+  const tasksByStatus = { todo: 0, 'in-progress': 0, review: 0, completed: 0 };
+  for (const row of byStatusRows) {
+    if (row && row._id && typeof row.count === 'number') tasksByStatus[row._id] = row.count;
+  }
+
+  res.json({
+    success: true,
+    project,
+    stats: { totalTasks, tasksByStatus }
+  });
 });
 
-// PUT /api/projects/:id (Admin only, owner only)
+// PUT /api/projects/:id
 const updateProject = asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -96,18 +125,24 @@ const updateProject = asyncHandler(async (req, res) => {
     throw new Error('Project not found');
   }
 
-  ensureOwner(project, req.user._id, res);
+  const canEdit = isProjectAdmin(project, req.user._id) || req.user.role === 'admin';
+  if (!canEdit) {
+    res.status(403);
+    throw new Error('Access denied');
+  }
 
-  const { name, description } = req.body;
+  const { name, description, status, deadline } = req.body;
   if (typeof name !== 'undefined') project.name = name;
   if (typeof description !== 'undefined') project.description = description;
+  if (typeof status !== 'undefined') project.status = status;
+  if (typeof deadline !== 'undefined') project.deadline = deadline ? new Date(deadline) : null;
 
   await project.save();
   const populated = await populateProject(Project.findById(project._id));
-  res.json(populated);
+  res.json({ success: true, project: populated });
 });
 
-// POST /api/projects/:id/members (Admin only, owner only)
+// POST /api/projects/:id/members
 const addProjectMembers = asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -121,37 +156,43 @@ const addProjectMembers = asyncHandler(async (req, res) => {
     throw new Error('Project not found');
   }
 
-  ensureOwner(project, req.user._id, res);
-
-  const { teamMembers = [] } = req.body;
-  const memberIds = Array.isArray(teamMembers) ? teamMembers : [];
-  const normalized = [...new Set(memberIds.map(String))];
-
-  for (const memberId of normalized) {
-    if (!mongoose.Types.ObjectId.isValid(memberId)) {
-      res.status(400);
-      throw new Error('Invalid teamMembers id');
-    }
+  const canEdit = isProjectAdmin(project, req.user._id) || req.user.role === 'admin';
+  if (!canEdit) {
+    res.status(403);
+    throw new Error('Access denied');
   }
 
-  const users = await User.find({ _id: { $in: normalized } }).select('_id');
-  if (users.length !== normalized.length) {
+  const { userId, role = 'member' } = req.body;
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
     res.status(400);
-    throw new Error('One or more teamMembers do not exist');
+    throw new Error('Invalid userId');
   }
 
-  const merged = new Set(project.teamMembers.map(String));
-  merged.add(String(project.createdBy));
-  for (const memberId of normalized) merged.add(String(memberId));
+  const user = await User.findById(userId).select('_id');
+  if (!user) {
+    res.status(404);
+    throw new Error('User not found');
+  }
 
-  project.teamMembers = Array.from(merged);
+  if (String(project.owner) === String(userId)) {
+    res.status(409);
+    throw new Error('User is already the project owner');
+  }
+
+  const alreadyMember = project.members.some((m) => String(m.user) === String(userId));
+  if (alreadyMember) {
+    res.status(409);
+    throw new Error('Already a member');
+  }
+
+  project.members.push({ user: userId, role, joinedAt: new Date() });
   await project.save();
 
   const populated = await populateProject(Project.findById(project._id));
-  res.json(populated);
+  res.json({ success: true, project: populated });
 });
 
-// DELETE /api/projects/:id/members/:userId (Admin only, owner only)
+// DELETE /api/projects/:id/members/:userId
 const removeProjectMember = asyncHandler(async (req, res) => {
   const { id, userId } = req.params;
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -169,34 +210,36 @@ const removeProjectMember = asyncHandler(async (req, res) => {
     throw new Error('Project not found');
   }
 
-  ensureOwner(project, req.user._id, res);
-
-  if (String(project.createdBy) === String(userId)) {
-    res.status(400);
-    throw new Error('Cannot remove project owner from teamMembers');
+  const canEdit = isProjectAdmin(project, req.user._id) || req.user.role === 'admin';
+  if (!canEdit) {
+    res.status(403);
+    throw new Error('Access denied');
   }
 
-  const before = project.teamMembers.map(String);
-  const after = before.filter((m) => String(m) !== String(userId));
-  if (after.length === before.length) {
+  if (String(project.owner) === String(userId)) {
+    res.status(400);
+    throw new Error('Cannot remove project owner');
+  }
+
+  const beforeCount = project.members.length;
+  project.members = project.members.filter((m) => String(m.user) !== String(userId));
+  if (project.members.length === beforeCount) {
     res.status(400);
     throw new Error('User is not a member of this project');
   }
 
-  const remainingAssignedTasks = await Task.countDocuments({ projectId: project._id, assignedTo: userId });
+  const remainingAssignedTasks = await Task.countDocuments({ project: project._id, assignedTo: userId });
   if (remainingAssignedTasks > 0) {
     res.status(400);
     throw new Error('Cannot remove member with assigned tasks. Reassign or delete their tasks first');
   }
 
-  project.teamMembers = after;
   await project.save();
-
   const populated = await populateProject(Project.findById(project._id));
-  res.json(populated);
+  res.json({ success: true, project: populated });
 });
 
-// DELETE /api/projects/:id (Admin only, owner only)
+// DELETE /api/projects/:id
 const deleteProject = asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -210,11 +253,14 @@ const deleteProject = asyncHandler(async (req, res) => {
     throw new Error('Project not found');
   }
 
-  ensureOwner(project, req.user._id, res);
+  if (String(project.owner) !== String(req.user._id)) {
+    res.status(403);
+    throw new Error('Access denied');
+  }
 
-  await Task.deleteMany({ projectId: project._id });
+  await Task.deleteMany({ project: project._id });
   await project.deleteOne();
-  res.json({ message: 'Project deleted' });
+  res.json({ success: true, message: 'Project deleted' });
 });
 
 module.exports = {

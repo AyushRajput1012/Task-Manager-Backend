@@ -3,7 +3,6 @@ const { body, param } = require('express-validator');
 const mongoose = require('mongoose');
 
 const { protect } = require('../middleware/authMiddleware');
-const { requireRole } = require('../middleware/roleMiddleware');
 const { validate } = require('../middleware/validate');
 const {
   createProject,
@@ -82,15 +81,10 @@ const router = express.Router();
 router.post(
   '/',
   protect,
-  requireRole('Admin'),
   [
     body('name').trim().notEmpty().withMessage('name is required'),
     body('description').optional().isString(),
-    body('teamMembers').optional().isArray().withMessage('teamMembers must be an array'),
-    body('teamMembers.*')
-      .optional()
-      .custom((v) => mongoose.Types.ObjectId.isValid(v))
-      .withMessage('teamMembers must contain valid user ids')
+    body('deadline').optional().isISO8601().withMessage('deadline must be an ISO8601 date')
   ],
   validate,
   createProject
@@ -189,11 +183,12 @@ router.get(
 router.put(
   '/:id',
   protect,
-  requireRole('Admin'),
   [
     param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
     body('name').optional().trim().notEmpty().withMessage('name cannot be empty'),
-    body('description').optional().isString()
+    body('description').optional().isString(),
+    body('status').optional().isIn(['active', 'completed', 'on-hold', 'archived']).withMessage('invalid status'),
+    body('deadline').optional().isISO8601().withMessage('deadline must be an ISO8601 date')
   ],
   validate,
   updateProject
@@ -235,13 +230,10 @@ router.put(
 router.post(
   '/:id/members',
   protect,
-  requireRole('Admin'),
   [
     param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
-    body('teamMembers').isArray({ min: 1 }).withMessage('teamMembers must be a non-empty array'),
-    body('teamMembers.*')
-      .custom((v) => mongoose.Types.ObjectId.isValid(v))
-      .withMessage('teamMembers must contain valid user ids')
+    body('userId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid user id'),
+    body('role').optional().isIn(['admin', 'member']).withMessage('role must be admin or member')
   ],
   validate,
   addProjectMembers
@@ -282,7 +274,6 @@ router.post(
 router.delete(
   '/:id/members/:userId',
   protect,
-  requireRole('Admin'),
   [
     param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id'),
     param('userId').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid user id')
@@ -321,7 +312,6 @@ router.delete(
 router.delete(
   '/:id',
   protect,
-  requireRole('Admin'),
   [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid project id')],
   validate,
   deleteProject

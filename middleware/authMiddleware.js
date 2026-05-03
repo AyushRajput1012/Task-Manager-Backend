@@ -31,11 +31,18 @@ const protect = asyncHandler(async (req, res, next) => {
     throw new Error('Not authorized, user not found');
   }
 
+  if (user.isActive === false) {
+    res.status(401);
+    throw new Error('Not authorized, user inactive');
+  }
+
   req.user = {
     _id: user._id,
     name: user.name,
     email: user.email,
-    role: user.role
+    role: user.role,
+    avatar: user.avatar ?? null,
+    isActive: user.isActive
   };
 
   next();

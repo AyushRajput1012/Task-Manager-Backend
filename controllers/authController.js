@@ -9,9 +9,19 @@ const signToken = (userId) => {
   return jwt.sign({ id: userId }, secret, { expiresIn });
 };
 
+const toUserPayload = (user) => ({
+  _id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  avatar: user.avatar ?? null,
+  isActive: user.isActive,
+  createdAt: user.createdAt
+});
+
 // POST /api/auth/signup
 const signup = asyncHandler(async (req, res) => {
-  const { name, email, password, role, adminSecret } = req.body;
+  const { name, email, password, role } = req.body;
 
   const existing = await User.findOne({ email: email.toLowerCase() });
   if (existing) {
@@ -19,18 +29,16 @@ const signup = asyncHandler(async (req, res) => {
     throw new Error('Email already in use');
   }
 
-  let finalRole = 'Member';
+  let finalRole = 'member';
 
   // Bootstrap: first user becomes Admin (useful for fresh installs / demos)
   const userCount = await User.countDocuments();
-  if (userCount === 0) {
-    finalRole = 'Admin';
-  }
+  if (userCount === 0) finalRole = 'admin';
 
-  if (role === 'Admin') {
+  if (role === 'admin') {
     const requiredSecret = process.env.ADMIN_SIGNUP_SECRET;
-    if (requiredSecret && adminSecret === requiredSecret) {
-      finalRole = 'Admin';
+    if (requiredSecret && req.body.adminSecret === requiredSecret) {
+      finalRole = 'admin';
     }
   }
 
@@ -43,13 +51,9 @@ const signup = asyncHandler(async (req, res) => {
 
   const token = signToken(user._id);
   res.status(201).json({
+    success: true,
     token,
-    user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role
-    }
+    user: toUserPayload(user)
   });
 });
 
@@ -62,6 +66,11 @@ const login = asyncHandler(async (req, res) => {
     throw new Error('Invalid credentials');
   }
 
+  if (user.isActive === false) {
+    res.status(401);
+    throw new Error('Invalid credentials');
+  }
+
   const ok = await user.matchPassword(password);
   if (!ok) {
     res.status(401);
@@ -70,14 +79,42 @@ const login = asyncHandler(async (req, res) => {
 
   const token = signToken(user._id);
   res.json({
+    success: true,
     token,
-    user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role
-    }
+    user: toUserPayload(user)
   });
 });
 
-module.exports = { signup, login };
+// GET /api/auth/me
+const getMe = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id);
+  if (!user) {
+    res.status(401);
+    throw new Error('Not authorized');
+  }
+
+  res.json({ success: true, user: toUserPayload(user) });
+});
+
+// PUT /api/auth/change-password
+const changePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  const user = await User.findById(req.user._id).select('+password');
+  if (!user) {
+    res.status(401);
+    throw new Error('Not authorized');
+  }
+
+  const ok = await user.matchPassword(currentPassword);
+  if (!ok) {
+    res.status(400);
+    throw new Error('Wrong current password');
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  res.json({ success: true, message: 'Password changed' });
+});
+
+module.exports = { signup, login, getMe, changePassword };

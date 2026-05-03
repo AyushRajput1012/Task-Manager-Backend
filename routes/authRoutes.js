@@ -1,6 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { signup, login } = require('../controllers/authController');
+const { signup, login, getMe, changePassword } = require('../controllers/authController');
+const { protect } = require('../middleware/authMiddleware');
 const { validate } = require('../middleware/validate');
 
 const router = express.Router();
@@ -61,8 +62,7 @@ router.post(
     body('name').trim().notEmpty().withMessage('name is required'),
     body('email').isEmail().withMessage('valid email is required'),
     body('password').isLength({ min: 6 }).withMessage('password must be at least 6 characters'),
-    body('role').optional().isIn(['Admin', 'Member']).withMessage('role must be Admin or Member'),
-    body('adminSecret').optional().isString()
+    body('role').optional().isIn(['admin', 'member']).withMessage('role must be admin or member')
   ],
   validate,
   signup
@@ -115,6 +115,19 @@ router.post(
   ],
   validate,
   login
+);
+
+router.get('/me', protect, getMe);
+
+router.put(
+  '/change-password',
+  protect,
+  [
+    body('currentPassword').notEmpty().withMessage('currentPassword is required'),
+    body('newPassword').isLength({ min: 6 }).withMessage('newPassword must be at least 6 characters')
+  ],
+  validate,
+  changePassword
 );
 
 module.exports = router;

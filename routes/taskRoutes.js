@@ -3,14 +3,13 @@ const { body, param } = require('express-validator');
 const mongoose = require('mongoose');
 
 const { protect } = require('../middleware/authMiddleware');
-const { requireRole } = require('../middleware/roleMiddleware');
 const { validate } = require('../middleware/validate');
 const {
   createTask,
   getTasks,
   getTaskById,
-  getTaskDashboard,
   updateTask,
+  updateTaskStatus,
   deleteTask
 } = require('../controllers/taskController');
 
@@ -99,58 +98,29 @@ const router = express.Router();
 router.post(
   '/',
   protect,
-  requireRole('Admin'),
   [
     body('title').trim().notEmpty().withMessage('title is required'),
     body('description').optional().isString(),
-    body('status').optional().isIn(['Pending', 'In Progress', 'Completed']).withMessage('invalid status'),
-    body('assignedTo')
-      .custom((v) => mongoose.Types.ObjectId.isValid(v))
-      .withMessage('assignedTo must be a valid user id'),
     body('projectId')
       .custom((v) => mongoose.Types.ObjectId.isValid(v))
       .withMessage('projectId must be a valid project id'),
-    body('deadline').isISO8601().withMessage('deadline must be an ISO8601 date')
+    body('assignedTo')
+      .optional({ nullable: true })
+      .custom((v) => v === null || mongoose.Types.ObjectId.isValid(v))
+      .withMessage('assignedTo must be a valid user id'),
+    body('priority')
+      .optional()
+      .isIn(['low', 'medium', 'high', 'urgent'])
+      .withMessage('invalid priority'),
+    body('dueDate').optional().isISO8601().withMessage('dueDate must be an ISO8601 date'),
+    body('tags').optional().isArray().withMessage('tags must be an array'),
+    body('tags.*').optional().isString().withMessage('tags must be strings')
   ],
   validate,
   createTask
 );
 
 router.get('/', protect, getTasks);
-
-/**
- * @openapi
- * /api/tasks/dashboard:
- *   get:
- *     tags:
- *       - Tasks
- *     summary: Dashboard summary (counts + overdue)
- *     description: Defaults to tasks assigned to the current user. Admin can pass scope=all to include all tasks in accessible projects.
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: projectId
- *         schema:
- *           type: string
- *         description: Filter dashboard by project id
- *       - in: query
- *         name: scope
- *         schema:
- *           type: string
- *           enum: [mine, all]
- *         description: Admin only. Use all to include team tasks.
- *     responses:
- *       200:
- *         description: OK
- *       400:
- *         description: Invalid projectId
- *       401:
- *         description: Unauthorized
- *       403:
- *         description: Forbidden
- */
-router.get('/dashboard', protect, getTaskDashboard);
 
 /**
  * @openapi
@@ -291,19 +261,42 @@ router.put(
     param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
     body('title').optional().isString(),
     body('description').optional().isString(),
-    body('status').optional().isIn(['Pending', 'In Progress', 'Completed']).withMessage('invalid status'),
-    body('assignedTo').optional().custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid assignedTo'),
-    body('projectId').custom((v) => typeof v === 'undefined').withMessage('projectId cannot be changed'),
-    body('deadline').optional().isISO8601().withMessage('deadline must be an ISO8601 date')
+    body('status')
+      .optional()
+      .isIn(['todo', 'in-progress', 'review', 'completed'])
+      .withMessage('invalid status'),
+    body('assignedTo')
+      .optional({ nullable: true })
+      .custom((v) => v === null || mongoose.Types.ObjectId.isValid(v))
+      .withMessage('invalid assignedTo'),
+    body('priority')
+      .optional()
+      .isIn(['low', 'medium', 'high', 'urgent'])
+      .withMessage('invalid priority'),
+    body('dueDate').optional().isISO8601().withMessage('dueDate must be an ISO8601 date'),
+    body('tags').optional().isArray().withMessage('tags must be an array'),
+    body('tags.*').optional().isString().withMessage('tags must be strings')
   ],
   validate,
   updateTask
 );
 
+router.patch(
+  '/:id/status',
+  protect,
+  [
+    param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id'),
+    body('status')
+      .isIn(['todo', 'in-progress', 'review', 'completed'])
+      .withMessage('invalid status')
+  ],
+  validate,
+  updateTaskStatus
+);
+
 router.delete(
   '/:id',
   protect,
-  requireRole('Admin'),
   [param('id').custom((v) => mongoose.Types.ObjectId.isValid(v)).withMessage('invalid task id')],
   validate,
   deleteTask
